@@ -1,0 +1,141 @@
+Description: Add ODRecordAuthenticationAllowed, the account lock errors and kODBackOffSeconds. Leave out the trigger API.
+Author: The Blueberry Pie OS Authors
+Forwarded: not-needed
+Last-Update: 2026-11-11
+
+diff --git a/Core/CFODRecord.c b/Core/CFODRecord.c
+index ecb160a..1b65560 100644
+--- a/Core/CFODRecord.c
++++ b/Core/CFODRecord.c
+@@ -20,6 +20,7 @@
+  * 
+  * @APPLE_LICENSE_HEADER_END@
+  */
++/* Modified 2026-11-10: added ODRecordAuthenticationAllowed (APSL 2.0 section 2.2(b)). */
+ 
+ #include <CoreFoundation/CoreFoundation.h>
+ #include <CoreFoundation/CFBridgingPriv.h>
+@@ -383,6 +384,26 @@ ODRecordVerifyPassword(ODRecordRef record, CFStringRef password, CFErrorRef *err
+ 	return success;
+ }
+ 
++bool
++ODRecordAuthenticationAllowed(ODRecordRef record, CFErrorRef *error)
++{
++	CLEAR_ERROR(error);
++	if (!_validate_nonnull(error, CFSTR("record"), record)) {
++		return false;
++	}
++
++	__block bool success = false;
++	CFArrayRef response;
++	uint32_t code;
++
++	response = transaction_simple(&code, record->_session, _ODRecordGetNode(record), CFSTR("ODRecordAuthenticationAllowed"), 3, record->_type, record->_name, record->_metaname);
++	transaction_simple_response(response, code, 1, error, ^ {
++		success = true;
++	});
++
++	return success;
++}
++
+ bool
+ ODRecordVerifyPasswordExtended(ODRecordRef record, ODAuthenticationType authType, CFArrayRef authItems, CFArrayRef *authItemsOut, ODContextRef *context, CFErrorRef *error)
+ {
+diff --git a/Core/CFODRecord.h b/Core/CFODRecord.h
+index e593e29..4e88f7b 100644
+--- a/Core/CFODRecord.h
++++ b/Core/CFODRecord.h
+@@ -20,6 +20,7 @@
+  * 
+  * @APPLE_LICENSE_HEADER_END@
+  */
++/* Modified 2026-11-10: added ODRecordAuthenticationAllowed (APSL 2.0 section 2.2(b)). */
+ 
+ #if !defined(__OPENDIRECTORY_CFODRECORD__)
+ #define __OPENDIRECTORY_CFODRECORD__
+@@ -111,6 +112,9 @@ CFDictionaryRef ODRecordCopyPasswordPolicy(CFAllocatorRef allocator, ODRecordRef
+ CF_EXPORT
+ bool ODRecordVerifyPassword(ODRecordRef record, CFStringRef password, CFErrorRef *error) __OSX_AVAILABLE_STARTING(__MAC_10_6, __IPHONE_NA);
+ 
++CF_EXPORT
++bool ODRecordAuthenticationAllowed(ODRecordRef record, CFErrorRef *error);
++
+ /*!
+     @function   ODRecordVerifyPasswordExtended
+     @abstract   Allows use of other Open Directory types of authentications to verify a record password
+diff --git a/Core/CFOpenDirectoryPriv.h b/Core/CFOpenDirectoryPriv.h
+index 0141a87..3414c3b 100644
+--- a/Core/CFOpenDirectoryPriv.h
++++ b/Core/CFOpenDirectoryPriv.h
+@@ -20,6 +20,7 @@
+  * 
+  * @APPLE_LICENSE_HEADER_END@
+  */
++/* Modified 2026-11-10: left out the trigger API (APSL 2.0 section 2.2(b)). */
+ 
+ /*!
+     @header     CFOpenDirectoryPriv
+@@ -35,8 +36,6 @@
+ #include <CFOpenDirectory/CFOpenDirectoryConstantsPriv.h>
+ #include <DirectoryService/DirServicesTypes.h>
+ 
+-#include <CFOpenDirectory/CFODTrigger.h>
+-
+ /* 8239461 */
+ CF_EXPORT const ODRecordType kODRecordTypeUserAuthenticationData __OSX_AVAILABLE_STARTING(__MAC_10_7, __IPHONE_NA);
+ 
+diff --git a/Core/errors.c b/Core/errors.c
+index fe8a9ba..a2af63d 100644
+--- a/Core/errors.c
++++ b/Core/errors.c
+@@ -20,6 +20,7 @@
+  * 
+  * @APPLE_LICENSE_HEADER_END@
+  */
++/* Modified 2026-11-10: added kODBackOffSeconds, error details from the daemon and the account lock errors (APSL 2.0 section 2.2(b)). */
+ 
+ #include <CoreFoundation/CoreFoundation.h>
+ #include "DirServicesTypes.h"
+@@ -28,6 +29,7 @@
+ #include "internal.h"
+ 
+ const CFStringRef kODErrorDomainFramework = CFSTR("com.apple.OpenDirectory");
++const CFStringRef kODBackOffSeconds = CFSTR("BackOffSeconds");
+ 
+ static CFStringRef MapCodeToReason(uint32_t code);
+ 
+@@ -38,7 +40,19 @@ _ODErrorSet(CFErrorRef *error, uint32_t code, CFStringRef info)
+ 		return;
+ 	}
+ 
+-	if (code) {
++	if (code && info != NULL && CFGetTypeID(info) == CFDictionaryGetTypeID()) {
++		CFMutableDictionaryRef details = CFDictionaryCreateMutableCopy(NULL, 0, (CFDictionaryRef)info);
++		CFStringRef reason = MapCodeToReason(code);
++
++		if (!CFDictionaryContainsKey(details, kCFErrorLocalizedDescriptionKey)) {
++			CFDictionarySetValue(details, kCFErrorLocalizedDescriptionKey, reason);
++		}
++		CFDictionarySetValue(details, kCFErrorLocalizedFailureReasonKey, reason);
++		*error = CFErrorCreate(NULL, kODErrorDomainFramework, code, details);
++
++		CFRelease(reason);
++		CFRelease(details);
++	} else if (code) {
+ 		CFStringRef keys[2], vals[2];
+ 
+ 		keys[0] = kCFErrorLocalizedDescriptionKey;
+@@ -215,6 +229,12 @@ MapCodeToReason(uint32_t code)
+ 	case kODErrorCredentialsAccountInactive:
+ 		reason = CFCopyLocalizedStringFromTableInBundle(CFSTR("Credential verification failed because account is inactive."), NULL, bundle, NULL);
+ 		break;
++	case kODErrorCredentialsAccountTemporarilyLocked:
++		reason = CFCopyLocalizedStringFromTableInBundle(CFSTR("Credential verification failed because account is temporarily locked."), NULL, bundle, NULL);
++		break;
++	case kODErrorCredentialsAccountLocked:
++		reason = CFCopyLocalizedStringFromTableInBundle(CFSTR("Credential verification failed because account is locked."), NULL, bundle, NULL);
++		break;
+ 	case kODErrorCredentialsPasswordExpired:
+ 		reason = CFCopyLocalizedStringFromTableInBundle(CFSTR("Credential verification failed because password has expired."), NULL, bundle, NULL);
+ 		break;

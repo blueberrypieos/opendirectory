@@ -1,0 +1,88 @@
+#!/usr/bin/make -f
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026 The Blueberry Pie OS Authors
+
+include /usr/share/pietoolchain/rules.mk
+
+OD   := System/Library/Frameworks/OpenDirectory.framework
+CFOD := $(OD)/Versions/A/Frameworks/CFOpenDirectory.framework
+DS   := System/Library/Frameworks/DirectoryService.framework
+SRC  := $(OBJ)/src
+HDR  := $(OBJ)/include
+
+SOURCES := CFODContext CFODNode CFODQuery CFODRecord CFODSession constants errors extauth format \
+	transaction
+OWN_SOURCES := odutils odxpc
+SRC_HEADERS := CFODContext.h CFODNode.h CFODQuery.h CFODRecord.h CFODSession.h CFOpenDirectory.h \
+	CFOpenDirectoryPriv.h context_internal.h extauth.h format.h internal.h rb.h record_internal.h \
+	transaction.h
+PUBLIC_HEADERS := CFOpenDirectory.h CFODContext.h CFODNode.h CFODQuery.h CFODRecord.h CFODSession.h
+PRIVATE_HEADERS := CFOpenDirectoryPriv.h
+DS_HEADERS := DirServicesConst.h DirServicesTypes.h
+
+OBJS  := $(patsubst %,$(SRC)/%.o,$(SOURCES) $(OWN_SOURCES))
+FLAGS := $(BASE_CFLAGS) -I$(HDR) -I$(HDR)/DirectoryService
+DYLIB := $(OBJ)/CFOpenDirectory
+UMBRELLA := $(OBJ)/OpenDirectory
+NOTICE := $(OBJ)/apsl-notice
+
+all: $(DYLIB) $(UMBRELLA)
+
+$(OBJ)/.copied:
+	mkdir -p $(SRC) $(HDR)/CFOpenDirectory $(HDR)/DirectoryService
+	cd $(SRCROOT)/Core && cp $(addsuffix .c,$(SOURCES)) $(SRC_HEADERS) $(SRC)/
+	cp debian/src/*.c debian/src/*.h $(SRC)/
+	cd $(SRCROOT)/Core && cp $(PUBLIC_HEADERS) $(PRIVATE_HEADERS) $(HDR)/CFOpenDirectory/
+	cp -R debian/include/. $(HDR)/
+	cd $(SRCROOT)/DirectoryService && cp $(DS_HEADERS) $(HDR)/DirectoryService/
+	touch $@
+
+$(SRC)/%.o: $(OBJ)/.copied
+	$(CC) $(FLAGS) -c $(SRC)/$*.c -o $@
+
+$(NOTICE):
+	@mkdir -p $(OBJ)
+	printf '%s\n' 'This program contains Covered Code under the Apple Public Source License 2.0.' \
+		'Its Source Code is available under that License from https://github.com/blueberrypieos/opendirectory.' > $@
+
+$(DYLIB): $(OBJS) $(NOTICE)
+	$(CC) $(BASE_LDFLAGS) -Wl,-sectcreate,__TEXT,__source,$(NOTICE) -dynamiclib \
+		-install_name /$(CFOD)/Versions/A/CFOpenDirectory -compatibility_version 1 -current_version 1 \
+		-exported_symbols_list debian/CFOpenDirectory.exp $(OBJS) -framework CoreFoundation -lCrashReporterClient -o $@
+
+$(UMBRELLA): $(DYLIB) $(SRC)/opendirectory.o
+	install -D -m 755 $(DYLIB) $(OBJ)/Frameworks/CFOpenDirectory.framework/CFOpenDirectory
+	$(CC) $(BASE_LDFLAGS) -dynamiclib -install_name /$(OD)/Versions/A/OpenDirectory \
+		-compatibility_version 1 -current_version 1 $(SRC)/opendirectory.o \
+		-F$(OBJ)/Frameworks -Wl,-reexport_framework,CFOpenDirectory -o $@
+
+install: all
+	install -d $(ROOT)/$(OD)/Versions/A/Headers $(ROOT)/$(OD)/Versions/A/PrivateHeaders \
+		$(ROOT)/$(CFOD)/Versions/A/Headers $(ROOT)/$(CFOD)/Versions/A/PrivateHeaders \
+		$(ROOT)/$(CFOD)/Versions/A/Resources $(ROOT)/$(DS)/Versions/A/Headers
+	ln -s A $(ROOT)/$(OD)/Versions/Current
+	ln -s Versions/Current/Headers $(ROOT)/$(OD)/Headers
+	ln -s Versions/Current/PrivateHeaders $(ROOT)/$(OD)/PrivateHeaders
+	ln -s Versions/Current/Frameworks $(ROOT)/$(OD)/Frameworks
+	ln -s Versions/Current/OpenDirectory $(ROOT)/$(OD)/OpenDirectory
+	ln -s A $(ROOT)/$(CFOD)/Versions/Current
+	ln -s Versions/Current/CFOpenDirectory $(ROOT)/$(CFOD)/CFOpenDirectory
+	ln -s Versions/Current/Headers $(ROOT)/$(CFOD)/Headers
+	ln -s Versions/Current/PrivateHeaders $(ROOT)/$(CFOD)/PrivateHeaders
+	ln -s Versions/Current/Resources $(ROOT)/$(CFOD)/Resources
+	ln -s A $(ROOT)/$(DS)/Versions/Current
+	ln -s Versions/Current/Headers $(ROOT)/$(DS)/Headers
+	install -m 755 $(DYLIB) $(ROOT)/$(CFOD)/Versions/A/CFOpenDirectory
+	install -m 755 $(UMBRELLA) $(ROOT)/$(OD)/Versions/A/OpenDirectory
+	install -m 644 debian/CFOpenDirectory-Info.plist $(ROOT)/$(CFOD)/Versions/A/Resources/Info.plist
+	install -m 644 Framework/OpenDirectory.h $(ROOT)/$(OD)/Versions/A/Headers/
+	install -m 644 Framework/OpenDirectoryPriv.h $(ROOT)/$(OD)/Versions/A/PrivateHeaders/
+	cd Core && install -m 644 $(PUBLIC_HEADERS) $(ROOT)/$(CFOD)/Versions/A/Headers/
+	cd Core && install -m 644 $(PRIVATE_HEADERS) $(ROOT)/$(CFOD)/Versions/A/PrivateHeaders/
+	install -m 644 debian/include/CFOpenDirectory/CFOpenDirectoryConstants.h \
+		$(ROOT)/$(CFOD)/Versions/A/Headers/
+	install -m 644 debian/include/CFOpenDirectory/CFOpenDirectoryConstantsPriv.h \
+		$(ROOT)/$(CFOD)/Versions/A/PrivateHeaders/
+	cd DirectoryService && install -m 644 $(DS_HEADERS) $(ROOT)/$(DS)/Versions/A/Headers/
+
+.PHONY: all install
